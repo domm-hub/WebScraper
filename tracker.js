@@ -60,6 +60,147 @@ async function postUpdate(payload) {
   return true;
 }
 
+async function triggerDigest() {
+  log("INFO", "Triggering daily digest check...");
+  try {
+    const response = await fetch(`${VERCEL_APP_URL}/api/digest`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${SCRAPER_SECRET}`,
+        "Content-Type": "application/json",
+      },
+    });
+    const body = await response.json();
+    log("INFO", `Digest response: ${JSON.stringify(body)}`);
+  } catch (err) {
+    log("WARN", `Digest trigger failed: ${err.message}`);
+  }
+}
+
+const SIMILAR_REFRESH_MS = 6 * 60 * 60 * 1000;
+
+const STOP_WORDS = new Set([
+  "the", "a", "an", "and", "or", "for", "with", "from", "that", "this",
+  "you", "your", "new", "all", "in", "on", "of", "to", "egp", "edition",
+]);
+
+function buildSearchQuery(product) {
+  const title = (product.last_title || "").trim();
+  if (title) {
+    const words = title
+      .replace(/[^A-Za-z0-9\s]/g, " ")
+      .split(/\s+/)
+      .map((w) => w.trim())
+      .filter((w) => w.length > 2 && !STOP_WORDS.has(w.toLowerCase()))
+      .slice(0, 5)
+      .join(" ");
+    if (words) {
+      return words;
+    }
+  }
+  return product.asin;
+}
+
+function needsSimilarRefresh(product) {
+  if (!product.similar_fetched_at) {
+    return true;
+  }
+  const fetchedAt = Date.parse(product.similar_fetched_at);
+  if (isNaN(fetchedAt)) {
+    return true;
+  }
+  return Date.now() - fetchedAt > SIMILAR_REFRESH_MS;
+}
+
+async function scrapeSimilarResults(firecrawl, product) {
+  const query = buildSearchQuery(product);
+  const url = `https://www.amazon.eg/s?k=${encodeURIComponent(query)}`;
+  log("INFO", `Scraping similar results for ${product.asin}: ${url}`);
+
+  let result;
+  try {
+    result = await firecrawl.scrape(url, { formats: ["html"] });
+  } catch (err) {
+    log("ERROR", `Similar search failed for ${product.asin}: ${err.message}`);
+    return [];
+  }
+
+  if (!result || !result.html) {
+    log("WARN", `No HTML for similar search of ${product.asin}.`);
+    return [];
+  }
+
+  const $ = cheerio.load(result.html);
+  if (hasCaptcha($)) {
+    log("WARN", `CAPTCHA on similar search for ${product.asin}.`);
+    return [];
+  }
+
+  const found = [];
+  $(".s-main-slot [data-asin]").each((i, el) => {
+    if (found.length >= 4) {
+      return false;
+    }
+    const $el = $(el);
+    if ($el.attr("data-component-type") !== "s-search-result") {
+      return;
+    }
+    const asin = ($el.attr("data-asin") || "").trim();
+    if (!/^[A-Z0-9]{10}$/.test(asin)) {
+      return;
+    }
+    if (asin === product.asin || found.some((f) => f.asin === asin)) {
+      return;
+    }
+
+    const itemText = $el.text().toLowerCase();
+    if (
+      itemText.includes("currently unavailable") ||
+      itemText.includes("temporarily out of stock") ||
+      itemText.includes("out of stock")
+    ) {
+      return;
+    }
+
+    const title = $el
+      .find("h2")
+      .first()
+      .text()
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!title) {
+      return;
+    }
+
+    const whole = $el
+      .find(".a-price-whole")
+      .first()
+      .text()
+      .replace(/[^0-9]/g, "");
+    const fraction = $el
+      .find(".a-price-fraction")
+      .first()
+      .text()
+      .replace(/[^0-9]/g, "");
+    let price = null;
+    if (whole) {
+      price = parseFloat(`${whole}.${fraction || "00"}`);
+    }
+
+    found.push({
+      asin,
+      title: title.slice(0, 80),
+      price,
+    });
+  });
+
+  log(
+    "INFO",
+    `Similar result count for ${product.asin}: ${found.length}`
+  );
+  return found;
+}
+
 function hasCaptcha($) {
   return $('input[id="captchacharacters"]').length > 0;
 }
@@ -220,13 +361,31 @@ async function runScraper() {
       const result = await scrapeProduct(firecrawl, product);
       results.push(result);
 
-      await postUpdate({
+      const updatePayload = {
         asin: result.asin,
         price: result.price,
         is_available: result.is_available,
         title: result.title,
         captcha_hit: result.captcha_hit,
-      });
+      };
+
+      if (
+        result.is_available === false &&
+        !result.captcha_hit &&
+        result.title &&
+        needsSimilarRefresh(product)
+      ) {
+        const similar = await scrapeSimilarResults(firecrawl, {
+          asin: product.asin,
+          last_title: result.title || product.last_title,
+        });
+        if (similar.length > 0) {
+          updatePayload.similar_products = similar;
+          updatePayload.similar_fetched_at = new Date().toISOString();
+        }
+      }
+
+      await postUpdate(updatePayload);
     } catch (err) {
       log(
         "ERROR",
@@ -260,6 +419,10 @@ async function runScraper() {
   }
 
   log("INFO", `=== Scraper run complete. Processed ${results.length} product(s). ===`);
+
+  if (results.length > 0) {
+    await triggerDigest();
+  }
 }
 
 (async () => {
