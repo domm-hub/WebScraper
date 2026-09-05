@@ -185,7 +185,8 @@ function needsSimilarRefresh(product) {
 
 async function scrapeSimilarResults(firecrawl, product) {
   const query = buildSearchQuery(product);
-  const url = `https://www.amazon.eg/s?k=${encodeURIComponent(query)}`;
+  const host = product.host || "www.amazon.eg";
+  const url = `https://${host}/s?k=${encodeURIComponent(query)}`;
   log("INFO", `Scraping similar results for ${product.asin}: ${url}`);
 
   let result;
