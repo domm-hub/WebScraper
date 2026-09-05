@@ -131,6 +131,23 @@ async function triggerDigest() {
   }
 }
 
+async function triggerPrune() {
+  log("INFO", "Triggering history prune check...");
+  try {
+    const response = await fetch(`${VERCEL_APP_URL}/api/prune`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${SCRAPER_SECRET}`,
+        "Content-Type": "application/json",
+      },
+    });
+    const body = await response.json();
+    log("INFO", `Prune response: ${JSON.stringify(body)}`);
+  } catch (err) {
+    log("WARN", `Prune trigger failed: ${err.message}`);
+  }
+}
+
 const SIMILAR_REFRESH_MS = 6 * 60 * 60 * 1000;
 
 const STOP_WORDS = new Set([
@@ -472,6 +489,7 @@ async function runScraper() {
 
   if (results.length > 0) {
     await triggerDigest();
+    await triggerPrune();
   }
 }
 
