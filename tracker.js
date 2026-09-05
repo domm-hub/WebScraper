@@ -277,26 +277,49 @@ function hasCaptcha($) {
 }
 
 function extractPrice($) {
-  const wholeTag = $(".a-price-whole").first();
-  const fracTag = $(".a-price-fraction").first();
+  const scopes = [
+    "#corePriceDisplay_desktop_feature_div",
+    "#corePrice_feature_div",
+    "#buyNewInner",
+    "#price_inside_buybox",
+    "#centerCol",
+  ];
 
-  if (wholeTag.length === 0) {
-    return null;
+  for (const scope of scopes) {
+    const container = $(scope).first();
+    if (container.length === 0) {
+      continue;
+    }
+    const wholeEl = container.find(".a-price-whole").first();
+    if (wholeEl.length === 0) {
+      continue;
+    }
+    const whole = (wholeEl.contents().first().text() || wholeEl.text()).replace(
+      /[^0-9]/g,
+      ""
+    );
+    if (!whole) {
+      continue;
+    }
+    const fraction = container
+      .find(".a-price-fraction")
+      .first()
+      .text()
+      .replace(/[^0-9]/g, "");
+    return parseFloat(`${whole}.${fraction || "00"}`);
   }
 
-  const whole = (wholeTag.contents().first().text() || wholeTag.text()).replace(
-    /[^0-9]/g,
-    ""
-  );
-  const fraction = fracTag.length
-    ? fracTag.text().replace(/[^0-9]/g, "")
-    : "00";
-
-  if (!whole) {
-    return null;
+  const offscreen = $(
+    "#corePriceDisplay_desktop_feature_div .a-offscreen, #corePrice_feature_div .a-offscreen, .priceToPay .a-offscreen"
+  ).first();
+  if (offscreen.length) {
+    const cleaned = offscreen.text().replace(/[^0-9.]/g, "");
+    if (cleaned) {
+      return parseFloat(cleaned);
+    }
   }
 
-  return parseFloat(`${whole}.${fraction}`);
+  return null;
 }
 
 function extractAvailability($) {
