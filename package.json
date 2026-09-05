@@ -9,7 +9,9 @@
   },
   "dependencies": {
     "cheerio": "^1.0.0",
-    "firecrawl": "^4.38.0"
+    "firecrawl": "^4.38.0",
+    "http-proxy-agent": "^9.1.0",
+    "https-proxy-agent": "^9.1.0"
   },
   "engines": {
     "node": ">=18.0.0"

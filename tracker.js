@@ -3,6 +3,60 @@ const cheerio = require("cheerio");
 
 const VERCEL_APP_URL = process.env.VERCEL_APP_URL;
 const SCRAPER_SECRET = process.env.SCRAPER_SECRET;
+const FIRECRAWL_API_KEY = process.env.FIRECRAWL_API_KEY || "";
+const TOR_PROXY_HTTP = process.env.TOR_PROXY_HTTP || "";
+
+function enableHttpProxy() {
+  if (!TOR_PROXY_HTTP) {
+    return;
+  }
+  try {
+    const http = require("http");
+    const https = require("https");
+    const { HttpProxyAgent } = require("http-proxy-agent");
+    const { HttpsProxyAgent } = require("https-proxy-agent");
+
+    const httpAgent = new HttpProxyAgent(TOR_PROXY_HTTP);
+    const httpsAgent = new HttpsProxyAgent(TOR_PROXY_HTTP);
+
+    const origHttpRequest = http.request;
+    const origHttpsRequest = https.request;
+
+    http.request = function (options, ...rest) {
+      if (options && typeof options === "object") {
+        const hostname = options.hostname || options.host || options.address;
+        if (!options.agent && hostname && !isPrivateAddress(hostname)) {
+          options.agent = httpAgent;
+        }
+      }
+      return origHttpRequest.call(this, options, ...rest);
+    };
+
+    https.request = function (options, ...rest) {
+      if (options && typeof options === "object") {
+        const hostname = options.hostname || options.host;
+        if (!options.agent && hostname && !isPrivateAddress(hostname)) {
+          options.agent = httpsAgent;
+        }
+      }
+      return origHttpsRequest.call(this, options, ...rest);
+    };
+
+    log("INFO", `HTTP proxy routing enabled via ${TOR_PROXY_HTTP}.`);
+  } catch (err) {
+    log("WARN", `Could not enable HTTP proxy: ${err.message}`);
+  }
+}
+
+function isPrivateAddress(host) {
+  return (
+    host === "127.0.0.1" ||
+    host === "localhost" ||
+    host.startsWith("192.168.") ||
+    host.startsWith("10.") ||
+    host.startsWith("172.")
+  );
+}
 
 function log(level, message) {
   const timestamp = new Date().toISOString();
@@ -277,10 +331,8 @@ async function scrapeProduct(firecrawl, product) {
     );
     return {
       asin: product.asin,
-      price: null,
-      is_available: null,
-      title: null,
-      captcha_hit: false,
+      ok: false,
+      captcha_hit: true,
     };
   }
 
@@ -291,9 +343,7 @@ async function scrapeProduct(firecrawl, product) {
     log("WARN", `CAPTCHA detected for ASIN: ${product.asin}. Skipping.`);
     return {
       asin: product.asin,
-      price: null,
-      is_available: false,
-      title: null,
+      ok: false,
       captcha_hit: true,
     };
   }
@@ -319,6 +369,7 @@ async function scrapeProduct(firecrawl, product) {
 
   return {
     asin: product.asin,
+    ok: true,
     price,
     is_available,
     title,
@@ -347,7 +398,11 @@ async function runScraper() {
     return;
   }
 
-  const firecrawl = new FirecrawlApp();
+  enableHttpProxy();
+
+  const firecrawl = FIRECRAWL_API_KEY
+    ? new FirecrawlApp({ apiKey: FIRECRAWL_API_KEY })
+    : new FirecrawlApp();
   const results = [];
 
   for (let i = 0; i < products.length; i++) {
@@ -360,6 +415,14 @@ async function runScraper() {
     try {
       const result = await scrapeProduct(firecrawl, product);
       results.push(result);
+
+      if (!result.ok) {
+        log(
+          "WARN",
+          `No usable data for ASIN ${product.asin}; keeping last known state.`
+        );
+        continue;
+      }
 
       const updatePayload = {
         asin: result.asin,
@@ -389,25 +452,12 @@ async function runScraper() {
     } catch (err) {
       log(
         "ERROR",
-        `Error scraping ASIN ${product.asin}: ${err.message}`
+        `Error processing ASIN ${product.asin}: ${err.message}`
       );
       results.push({
         asin: product.asin,
-        price: null,
-        is_available: false,
-        title: null,
-        captcha_hit: false,
+        ok: false,
         error: err.message,
-      });
-
-      await postUpdate({
-        asin: product.asin,
-        price: null,
-        is_available: false,
-        title: null,
-        captcha_hit: false,
-      }).catch((postErr) => {
-        log("ERROR", `Failed to post error update: ${postErr.message}`);
       });
     }
 

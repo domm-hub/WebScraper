@@ -10,6 +10,8 @@ jobs:
     env:
       VERCEL_APP_URL: ${{ secrets.VERCEL_APP_URL }}
       SCRAPER_SECRET: ${{ secrets.SCRAPER_SECRET }}
+      FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL_API_KEY }}
+      TOR_PROXY_HTTP: "http://127.0.0.1:8118"
 
     steps:
       - name: Checkout repository
@@ -18,7 +20,24 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
+
+      - name: Install and start Tor
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q tor privoxy
+          sudo systemctl start tor
+          sleep 3
+          sudo systemctl start privoxy
+          echo "Waiting for Tor bootstrap..."
+          for i in $(seq 1 20); do
+            code=$(curl -m 10 --socks5-hostname 127.0.0.1:9050 -s -o /dev/null -w "%{http_code}" https://ifconfig.me || true)
+            if [ "$code" = "200" ]; then
+              echo "Tor is up."
+              break
+            fi
+            sleep 3
+          done
 
       - name: Install dependencies
         run: npm ci
